@@ -71,35 +71,123 @@ export class WhatsappController {
   }
 
   @Post('schedule-send')
-@UseInterceptors(FileFieldsInterceptor([{ name: 'files', maxCount: 10 }]))
-async scheduleSend(
-  @UploadedFiles() files: { files?: Express.Multer.File[] },
-  @Body() body: { groupIds: string; scheduledTime: string },
-) {
-  const { groupIds, scheduledTime } = body;
+  @UseInterceptors(FileFieldsInterceptor([{ name: 'files', maxCount: 10 }]))
+  async scheduleSend(
+    @UploadedFiles() files: { files?: Express.Multer.File[] },
+    @Body() body: { groupIds: string; scheduledTime: string },
+  ) {
+    const { groupIds, scheduledTime } = body;
 
-  if (!files.files?.length || !groupIds || !scheduledTime) {
-    throw new BadRequestException('Faltan campos obligatorios');
+    if (!files.files?.length || !groupIds || !scheduledTime) {
+      throw new BadRequestException('Faltan campos obligatorios');
+    }
+
+    const parsedGroups = JSON.parse(groupIds);
+    const uploadDir = './uploads';
+    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+
+    const savedFilePaths = files.files.map((file) => {
+      const filePath = path.join(uploadDir, file.originalname);
+      fs.writeFileSync(filePath, file.buffer);
+      return filePath;
+    });
+
+    // ✅ Programar el envío real
+    await this.whatsappService.scheduleSendTask({
+      filePaths: savedFilePaths,
+      groupIds: parsedGroups,
+      scheduledTime: new Date(scheduledTime),
+    });
+
+    return { success: true, message: 'Envío programado correctamente' };
   }
 
-  const parsedGroups = JSON.parse(groupIds);
-  const uploadDir = './uploads';
-  if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+  @Get('uploaded-files')
+  getUploadedFiles() {
+    const dir = './uploads';
+    if (!fs.existsSync(dir)) return [];
 
-  const savedFilePaths = files.files.map((file) => {
-    const filePath = path.join(uploadDir, file.originalname);
-    fs.writeFileSync(filePath, file.buffer);
-    return filePath;
-  });
+    const files = fs.readdirSync(dir);
+    return files.map((filename) => ({
+      name: filename,
+      path: `/uploads/${filename}`, // opcional si querés servirlos estáticos
+    }));
+  }
 
-  // ✅ Programar el envío real
-  await this.whatsappService.scheduleSendTask({
-    filePaths: savedFilePaths,
-    groupIds: parsedGroups,
-    scheduledTime: new Date(scheduledTime),
-  });
+  @Post('schedule-file')
+  async scheduleSingleFile(
+    @Body()
+    body: {
+      filename: string;
+      groupIds: string[];
+      scheduledTime: string;
+    },
+  ) {
+    const { filename, groupIds, scheduledTime } = body;
+    const filePath = path.join('./uploads', filename);
 
-  return { success: true, message: 'Envío programado correctamente' };
-}
+    if (!fs.existsSync(filePath)) {
+      throw new BadRequestException('Archivo no encontrado');
+    }
 
+    await this.whatsappService.scheduleSendTask({
+      filePaths: [filePath],
+      groupIds,
+      scheduledTime: new Date(scheduledTime),
+    });
+
+    return { success: true, message: 'Archivo programado' };
+  }
+
+  @Get('get-qr')
+  getQRCodeStatus() {
+    const status = this.whatsappService.getClientStatus();
+
+    if (status === 'authenticated' || status === 'ready') {
+      return { message: 'ready' };
+    }
+
+    const qr = this.whatsappService.getQRCode();
+
+    if (status === 'qr' && qr) {
+      return { qrCode: qr };
+    }
+
+    return { message: 'Client status unknown or initializing' };
+  }
+
+  @Post('restart-client')
+  async restartClient() {
+    try {
+      await this.whatsappService.restartClient();
+      return { message: 'Cliente de WhatsApp reiniciado correctamente' };
+    } catch (error) {
+      return {
+        message: 'Error al reiniciar el cliente',
+        error: error.message,
+      };
+    }
+  }
+
+  @Post('upload-files')
+  @UseInterceptors(FileFieldsInterceptor([{ name: 'files', maxCount: 20 }]))
+  async uploadFiles(@UploadedFiles() files: { files?: Express.Multer.File[] }) {
+    if (!files.files?.length) {
+      throw new BadRequestException('No se recibieron archivos');
+    }
+
+    const uploadDir = './uploads';
+    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+
+    const savedFiles = files.files.map((file) => {
+      const filePath = path.join(uploadDir, file.originalname);
+      fs.writeFileSync(filePath, file.buffer);
+      return {
+        name: file.originalname,
+        path: filePath,
+      };
+    });
+
+    return savedFiles;
+  }
 }
